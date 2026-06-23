@@ -1,0 +1,8 @@
+pulp>=2.7.0
+pandas>=2.0.0
+numpy>=1.24.0
+# Apple Silicon (arm64) でも動くネイティブLPソルバー。
+# PuLP同梱のCBCはx86_64版のためarm64では起動できないことがある。
+highspy>=1.5.0
+# 負荷テストの実行時間グラフ出力に使用
+matplotlib>=3.5.0

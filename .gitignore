@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 生成物（再生成可能なので原則コミットしない）
+# データCSVと結果グラフは scripts で再生成できる。
+# 公開リポジトリにサンプルを含めたい場合は下記を必要に応じて解除。
+results/*.png
+data/power_data.csv
+
+# IDE / tooling
+.idea/
+.vscode/
+*.swp
+.claude/
