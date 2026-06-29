@@ -65,7 +65,7 @@ def main():
     df = generate_simulation_data()
     out_path = os.path.join(out_dir, "power_data.csv")
     df.to_csv(out_path, index=False)
-    print(f"シミュレーションデータを生成しました: {out_path}")
+    print(f"Simulation data generated: {out_path}")
     print(df.to_string(index=False))
 
 

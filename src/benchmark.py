@@ -40,14 +40,14 @@ def run_scale_benchmark():
     rows = []
 
     print("=" * 92)
-    print(" 負荷テスト: データ規模 1日 → 100日（100倍）における求解性能")
+    print(" Load test: solve performance from 1 day to 100 days (100x data)")
     print("=" * 92)
-    print(f" ソルバー設定: time_limit={TIME_LIMIT:.0f}s, mip_gap={MIP_GAP:.0%}, "
-          f"充放電同時禁止=ON(MIP)\n")
+    print(f" Solver settings: time_limit={TIME_LIMIT:.0f}s, mip_gap={MIP_GAP:.0%}, "
+          f"no-simultaneous=ON(MIP)\n")
 
     header = (
-        f"{'規模':>6} | {'時刻数T':>7} | {'変数':>7} | {'制約':>7} | "
-        f"{'求解秒':>8} | {'ステータス':>12} | {'削減率':>7}"
+        f"{'Scale':>7} | {'Steps T':>7} | {'Vars':>7} | {'Cons':>7} | "
+        f"{'Solve s':>8} | {'Status':>12} | {'Saving':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -82,7 +82,7 @@ def run_scale_benchmark():
         })
 
         print(
-            f"{days:>4}日 | {len(solar):>7,} | {res['n_vars']:>7,} | "
+            f"{days:>4}d  | {len(solar):>7,} | {res['n_vars']:>7,} | "
             f"{res['n_constraints']:>7,} | {elapsed:>7.3f}s | "
             f"{res['status']:>12} | {saving_pct:>6.1f}%"
         )
@@ -96,7 +96,7 @@ def run_infeasibility_test():
     and confirm that the fallback kicks in.
     """
     print("\n" + "=" * 92)
-    print(" 頑健性テスト: 解なし（Infeasible）シナリオでのフォールバック挙動")
+    print(" Robustness test: fallback behavior on an infeasible scenario")
     print("=" * 92)
 
     df = generate_simulation_data(days=1, seed=7)
@@ -107,7 +107,7 @@ def run_infeasibility_test():
     # Tightly cap grid purchase at 10 MWh/h -> cannot cover peak demand at night,
     # so the original problem is infeasible
     tight_limit = 10.0
-    print(f" シナリオ: grid_limit={tight_limit} MWh/h（需要ピーク {demand.max():.0f} に対し過小）")
+    print(f" Scenario: grid_limit={tight_limit} MWh/h (too small vs peak demand {demand.max():.0f})")
 
     res = optimize_battery(
         solar, demand, price,
@@ -116,14 +116,15 @@ def run_infeasibility_test():
     )
 
     total_unmet = sum(res.get("unmet", []))
-    print(f"\n  → クラッシュせず解を返却。")
-    print(f"     ステータス      : {res['status']}")
-    print(f"     採用手法        : {res['method']}")
-    print(f"     フォールバック  : {'発動' if res.get('fallback_used') else 'なし'}")
-    print(f"     未充足需要 合計 : {total_unmet:,.1f} MWh（緩和により可視化）")
-    print(f"     総コスト        : ${res['total_cost']:,.2f}")
-    print("\n  ※ 本来 Infeasible だが、制約緩和（未充足需要にペナルティ）で")
-    print("     『どこがどれだけ足りないか』を示す実行可能解を自動提示している。")
+    print(f"\n  -> Returned a solution without crashing.")
+    print(f"     Status        : {res['status']}")
+    print(f"     Method        : {res['method']}")
+    print(f"     Fallback      : {'triggered' if res.get('fallback_used') else 'none'}")
+    print(f"     Total unmet   : {total_unmet:,.1f} MWh (made visible via relaxation)")
+    print(f"     Total cost    : ${res['total_cost']:,.2f}")
+    print("\n  Note: the problem is infeasible as-is, but constraint relaxation")
+    print("        (penalizing unmet demand) auto-presents a feasible solution that")
+    print("        shows where and how much capacity is short.")
     return res
 
 
@@ -161,7 +162,7 @@ def plot_results(rows, out_path):
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
-    print(f"\nグラフを保存しました: {out_path}")
+    print(f"\nChart saved: {out_path}")
 
 
 def main():
@@ -176,14 +177,15 @@ def main():
     plot_results(rows, out_path)
 
     print("\n" + "=" * 92)
-    print(" 結論")
+    print(" Conclusion")
     print("=" * 92)
     slowest = max(rows, key=lambda r: r["time"])
-    print(f"  - 最大規模 {rows[-1]['days']}日（T={rows[-1]['T']:,}, "
-          f"変数{rows[-1]['n_vars']:,}）でも {rows[-1]['time']:.2f}s で求解。")
-    print(f"  - 全ケースで time_limit({TIME_LIMIT:.0f}s) 内に Optimal/近似解を取得。")
-    print(f"  - 最も遅いケース: {slowest['days']}日 / {slowest['time']:.2f}s。")
-    print(f"  - Infeasible 入力でもフォールバックにより実行可能解を返し無停止。")
+    print(f"  - Even at the largest scale {rows[-1]['days']}d (T={rows[-1]['T']:,}, "
+          f"vars {rows[-1]['n_vars']:,}), solved in {rows[-1]['time']:.2f}s.")
+    print(f"  - All cases obtained an Optimal/approximate solution within "
+          f"time_limit ({TIME_LIMIT:.0f}s).")
+    print(f"  - Slowest case: {slowest['days']}d / {slowest['time']:.2f}s.")
+    print(f"  - Infeasible inputs still return a feasible solution via fallback, no crash.")
     print("=" * 92)
 
 

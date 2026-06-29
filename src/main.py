@@ -28,8 +28,8 @@ def load_data():
     data_path = os.path.normpath(data_path)
     if not os.path.exists(data_path):
         raise FileNotFoundError(
-            f"データが見つかりません: {data_path}\n"
-            f"先に `python data/generate_data.py` を実行してください。"
+            f"Data not found: {data_path}\n"
+            f"Run `python data/generate_data.py` first."
         )
     return pd.read_csv(data_path)
 
@@ -40,7 +40,7 @@ def fmt_money(x):
 
 def main():
     print("=" * 70)
-    print(" BHE 蓄電池 充放電最適化シミュレーター")
+    print(" Grid Battery Dispatch Optimizer")
     print(" Battery Charge/Discharge Optimization for Grid Loss & Cost Reduction")
     print("=" * 70)
 
@@ -49,8 +49,8 @@ def main():
     demand = df["power_demand"].tolist()
     price = df["grid_electricity_price"].tolist()
 
-    print(f"\nバッテリー諸元: 最大容量 {CAPACITY:.0f} MWh / "
-          f"最大充放電レート {MAX_RATE:.0f} MW / 初期蓄電量 {INITIAL_SOC:.0f} MWh\n")
+    print(f"\nBattery specs: capacity {CAPACITY:.0f} MWh / "
+          f"max rate {MAX_RATE:.0f} MW / initial SoC {INITIAL_SOC:.0f} MWh\n")
 
     # --- Optimization ---
     result = optimize_battery(
@@ -61,18 +61,18 @@ def main():
     base = baseline_cost(solar, demand, price, loss_coeff=LOSS_COEFF)
 
     # --- Status ---
-    print("【最適化ステータス】")
-    print(f"  ソルバー結果: {result['status']}")
+    print("[Optimization status]")
+    print(f"  Solver result: {result['status']}")
     if result["status"] != "Optimal":
-        print("  ⚠ 最適解が得られませんでした。制約条件を確認してください。")
+        print("  ! No optimal solution found. Check the constraints.")
         return
-    print("  ✓ 最適解 (Optimal) が得られました。\n")
+    print("  OK: optimal solution found.\n")
 
     # --- Hourly table ---
-    print("【時間別 最適スケジュール】")
+    print("[Hourly optimal schedule]")
     header = (
-        f"{'時':>3} | {'太陽光':>7} | {'需要':>7} | {'価格':>7} | "
-        f"{'購入':>7} | {'充電':>6} | {'放電':>6} | {'動作':>6} | {'蓄電量SoC':>9}"
+        f"{'Hr':>3} | {'Solar':>7} | {'Demand':>7} | {'Price':>7} | "
+        f"{'Buy':>7} | {'Chg':>6} | {'Dis':>6} | {'Action':>9} | {'SoC':>9}"
     )
     print(header)
     print("-" * len(header))
@@ -81,18 +81,18 @@ def main():
         dis = result["discharge"][t] or 0.0
         soc = result["soc"][t] or 0.0
         if ch > 1e-4:
-            action = "充電 ▲"
+            action = "CHARGE ^"
         elif dis > 1e-4:
-            action = "放電 ▼"
+            action = "DISCHG v"
         else:
-            action = "待機 ―"
+            action = "IDLE  -"
         # SoC bar (simple gauge)
         bar_len = int(round(soc / CAPACITY * 10))
         soc_bar = "█" * bar_len + "·" * (10 - bar_len)
         print(
             f"{t:>3} | {solar[t]:>7.2f} | {demand[t]:>7.2f} | {price[t]:>7.2f} | "
             f"{result['grid_buy'][t]:>7.2f} | {ch:>6.2f} | {dis:>6.2f} | "
-            f"{action:>6} | {soc:>6.1f} {soc_bar}"
+            f"{action:>9} | {soc:>6.1f} {soc_bar}"
         )
 
     # --- Cost comparison ---
@@ -107,32 +107,32 @@ def main():
     total_loss_opt = sum(result.get("transmission_loss", []))
 
     print("\n" + "=" * 70)
-    print("【コスト・送電ロス削減レポート】")
+    print("[Cost & transmission-loss reduction report]")
     print("-" * 70)
-    print(f"  最適化前（バッテリーなし: 余剰太陽光を捨て不足分を全量購入）")
-    print(f"      総コスト          : {fmt_money(base_cost)}")
-    print(f"      送電ロス          : {total_loss_base:,.1f} MWh")
-    print(f"      捨てた太陽光       : {total_curtail_base:,.1f} MWh")
-    print(f"  最適化後（バッテリーを賢く充放電）")
-    print(f"      総コスト          : {fmt_money(opt_cost)}")
-    print(f"      送電ロス          : {total_loss_opt:,.1f} MWh")
-    print(f"      捨てた太陽光       : {total_curtail_opt:,.1f} MWh")
+    print(f"  Before (no battery: curtail solar surplus, buy all shortfall)")
+    print(f"      Total cost        : {fmt_money(base_cost)}")
+    print(f"      Transmission loss : {total_loss_base:,.1f} MWh")
+    print(f"      Curtailed solar   : {total_curtail_base:,.1f} MWh")
+    print(f"  After (smart battery charge/discharge)")
+    print(f"      Total cost        : {fmt_money(opt_cost)}")
+    print(f"      Transmission loss : {total_loss_opt:,.1f} MWh")
+    print(f"      Curtailed solar   : {total_curtail_opt:,.1f} MWh")
     loss_delta = total_loss_base - total_loss_opt  # positive = reduction, negative = increase
     print("-" * 70)
-    print(f"  💰 コスト削減額      : {fmt_money(saving)}")
-    print(f"  📉 コスト削減率      : {saving_pct:.1f} %")
-    print(f"  ☀ 救済した太陽光     : {total_curtail_base - total_curtail_opt:,.1f} MWh "
-          f"(捨てていた再エネを活用 = 再エネロスを削減)")
+    print(f"  $ Cost saved         : {fmt_money(saving)}")
+    print(f"  % Cost reduction     : {saving_pct:.1f} %")
+    print(f"  Solar recovered      : {total_curtail_base - total_curtail_opt:,.1f} MWh "
+          f"(reused curtailed renewables = less renewable waste)")
     if loss_delta >= 0:
-        print(f"  ⚡ 送電ロス          : {total_loss_base:.1f} → {total_loss_opt:.1f} MWh "
-              f"（{loss_delta:.1f} MWh 削減）")
+        print(f"  Transmission loss    : {total_loss_base:.1f} -> {total_loss_opt:.1f} MWh "
+              f"({loss_delta:.1f} MWh reduced)")
     else:
-        print(f"  ⚡ 送電ロス          : {total_loss_base:.1f} → {total_loss_opt:.1f} MWh "
-              f"（{-loss_delta:.1f} MWh 増 / 夜間アービトラージで送電量が増えるトレードオフ）")
+        print(f"  Transmission loss    : {total_loss_base:.1f} -> {total_loss_opt:.1f} MWh "
+              f"({-loss_delta:.1f} MWh increase / trade-off: overnight arbitrage raises throughput)")
     print("-" * 70)
-    print("  ※ 目的関数は『送電損失を価格に織り込んだ総コスト』の最小化。")
-    print("     送電ロスを更に抑えたい場合は optimizer の loss_coeff を上げ、")
-    print("     損失の限界コストを高く評価させると挙動が変わります。")
+    print("  Note: the objective minimizes total cost with transmission loss priced in.")
+    print("        To suppress loss further, raise the optimizer's loss_coeff so the")
+    print("        marginal cost of loss is weighted more heavily.")
     print("=" * 70)
 
 
