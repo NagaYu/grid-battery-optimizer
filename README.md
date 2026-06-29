@@ -1,62 +1,67 @@
-# Grid Battery Dispatch Optimizer — 蓄電池 充放電最適化シミュレーター
+# Grid Battery Dispatch Optimizer
 
-再生可能エネルギー（太陽光）の出力変動に対し、**蓄電池（バッテリー）の充放電を
-線形/混合整数計画（LP/MIP）で最適化**し、電力調達コストと送電損失・再エネ廃棄を
-削減する教育用シミュレーターです。`pulp` でモデルを定式化し、HiGHS / CBC ソルバーで
-解きます。
+An educational simulator that **optimizes battery charge/discharge dispatch with
+linear / mixed-integer programming (LP/MIP)** in response to variable renewable
+(solar) generation, reducing energy procurement cost, transmission losses, and
+renewable curtailment. The model is formulated with `pulp` and solved with the
+HiGHS / CBC solvers.
 
-> ⚠️ **免責 / Disclaimer**
-> 本リポジトリは **独立した学習・ポートフォリオ目的のシミュレーション** です。
-> 実在の電力会社・系統運用者とは一切関係がなく、いかなる企業（例：Berkshire
-> Hathaway Energy 等）から承認・出資・推奨を受けたものではありません。
-> 使用しているデータは `numpy` で生成した **完全な合成データ** であり、実際の
-> 需要・市場価格・送電設備を表すものではありません。本コードは投資・運用上の
-> 意思決定に用いることを意図していません。
+> ⚠️ **Disclaimer**
+> This repository is an **independent simulation built for learning / portfolio
+> purposes**. It has no affiliation whatsoever with any real utility or grid
+> operator, and is **not** endorsed, sponsored, or approved by any company
+> (e.g., Berkshire Hathaway Energy). All data is **fully synthetic**, generated
+> with `numpy`, and does not represent real demand, market prices, or
+> transmission assets. This code is not intended for investment or operational
+> decision-making.
 
 ---
 
-## 何を最適化するか
+## What it optimizes
 
-24時間（または任意日数）の各時刻で、次の意思決定を行います。
+For each time step over 24 hours (or any number of days), it decides:
 
-- グリッド（系統）からの購入量
-- 蓄電池への充電量 / 放電量
-- 太陽光の出力抑制（curtailment）量
+- Amount of electricity purchased from the grid
+- Battery charge / discharge amounts
+- Solar curtailment amount
 
-**目的関数:** 「送電損失を価格に織り込んだ総調達コスト」の最小化。
+**Objective:** minimize total procurement cost, with transmission losses priced
+into the cost.
 
-**主な制約:**
+**Key constraints:**
 
-| 制約 | 内容 |
+| Constraint | Description |
 |---|---|
-| 需給バランス | `太陽光 + (購入 − 送電損失) + 放電 == 需要 + 充電` を各時刻で維持 |
-| 蓄電量 (SoC) | `0 ≤ SoC ≤ 容量(既定100MWh)`、SoC遷移は充放電効率を反映 |
-| 充放電レート | `0 ≤ 充電/放電 ≤ レート上限(既定20MW)` |
-| 充放電同時禁止 | バイナリ変数で同一時刻の充電・放電を排他（MIP化、任意） |
-| 送電損失 | `loss = a·(送電端流量)²`（I²R 損）を**複数接線で区分線形近似**した凸制約 |
+| Supply/demand balance | `solar + (purchase − transmission loss) + discharge == demand + charge` at every time step |
+| State of charge (SoC) | `0 ≤ SoC ≤ capacity (default 100 MWh)`; SoC transitions reflect charge/discharge efficiency |
+| Charge/discharge rate | `0 ≤ charge/discharge ≤ rate limit (default 20 MW)` |
+| No simultaneous charge/discharge | A binary variable forbids charging and discharging in the same step (turns it into a MIP; optional) |
+| Transmission loss | `loss = a·(grid-side flow)²` (I²R loss) modeled as a convex constraint via **piecewise-linear approximation with multiple tangents** |
 
-> **送電損失について（重要）**
-> 線路損失は流量の2乗に比例（凸）するため、接線群で下から近似して LP に組み込んでいます。
-> 目的関数は損失込みの総コストを最小化するため、**ピーク時間帯の送電を蓄電池で
-> 肩代わりして損失を抑える**一方、**夜間の安価なアービトラージで総送電量が増え損失が
-> 増えるトレードオフ**も起こり得ます。シミュレーターはこの増減を正直に表示します。
-> 損失をより重く評価したい場合は `loss_coeff` を引き上げてください。
+> **About transmission loss (important)**
+> Line loss is proportional to the square of flow (convex), so it is embedded
+> into the LP by approximating it from below with a family of tangent lines.
+> Because the objective minimizes total cost *including* losses, the battery
+> **offsets peak-hour transmission to reduce losses** — but a **trade-off** can
+> also occur where cheap overnight arbitrage increases total throughput and
+> therefore losses. The simulator reports this increase or decrease honestly.
+> Raise `loss_coeff` to weight losses more heavily.
 
 ---
 
-## ディレクトリ構成
+## Project layout
 
 ```
 .
 ├── data/
-│   ├── generate_data.py   # 合成データ生成（任意日数に対応）
-│   └── power_data.csv      # 生成された24時間データ（再生成可）
+│   ├── generate_data.py   # synthetic data generation (any number of days)
+│   └── power_data.csv      # generated 24-hour dataset (regenerable)
 ├── src/
-│   ├── optimizer.py        # LP/MIP モデル本体・フォールバック・ルールベース代替
-│   ├── main.py             # 24時間シミュレーション＆レポート出力
-│   └── benchmark.py        # 負荷テスト（規模100倍）と実行時間グラフ
+│   ├── optimizer.py        # LP/MIP model, fallback logic, rule-based alternative
+│   ├── main.py             # 24-hour simulation & report output
+│   └── benchmark.py        # load test (up to 100x scale) & solve-time chart
 ├── results/
-│   └── benchmark.png        # 実行時間 vs データ規模 のグラフ（再生成可）
+│   └── benchmark.png        # solve time vs data scale chart (regenerable)
 ├── requirements.txt
 ├── LICENSE                  # MIT
 └── README.md
@@ -64,77 +69,84 @@
 
 ---
 
-## セットアップと実行
+## Setup & run
 
 ```bash
-# 1. 依存インストール
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. シミュレーションデータ生成（24時間分）
+# 2. Generate simulation data (24 hours)
 python data/generate_data.py
 
-# 3. 最適化シミュレーション＆レポート
+# 3. Run the optimization & report
 python src/main.py
 
-# 4. 負荷テスト（データ規模 1日→100日 / グラフ出力）
+# 4. Load test (scale from 1 day to 100 days / chart output)
 python src/benchmark.py
 ```
 
-### ソルバーについて
-PuLP 同梱の CBC バイナリは x86_64 版のみで、Apple Silicon (arm64) では起動できない
-ことがあります。本プロジェクトは **HiGHS（`highspy`, arm64 ネイティブ）を優先**し、
-無ければ CBC にフォールバックします（`src/optimizer.py` の `_get_solver`）。
+### About the solver
+The CBC binary bundled with PuLP is x86_64 only and may fail to launch on Apple
+Silicon (arm64). This project **prefers HiGHS (`highspy`, arm64-native)** and
+falls back to CBC when it is unavailable (see `_get_solver` in
+`src/optimizer.py`).
 
 ---
 
-## スケーラビリティと頑健性
+## Scalability & robustness
 
-実務規模を想定し、以下を実装しています。
+Built with production scale in mind:
 
-1. **ソルバー制御** — `time_limit`（打ち切り秒数）と `mip_gap`（既定1%の近似許容）を
-   設定し、大規模化しても実用時間内に解を返す。
-2. **スパース構築** — 値が常に0になる変数（夜間 `solar=0` の curtail など）は生成せず、
-   `lpSum`/辞書内包で制約行列を最小化。
-3. **解なし耐性** — `Infeasible` 等でクラッシュせず、①制約緩和（未充足需要にペナルティ）
-   → ②ルールベース代替、の2段フォールバックで必ず実行可能な解を返す。
+1. **Solver control** — sets `time_limit` (cutoff seconds) and `mip_gap`
+   (default 1% approximation tolerance) so it returns a solution within a
+   practical time budget even as the problem grows.
+2. **Sparse construction** — variables that are always zero (e.g., curtailment at
+   night when `solar=0`) are never created; the constraint matrix is minimized
+   with `lpSum` / dict comprehensions.
+3. **Infeasibility tolerance** — it does not crash on `Infeasible` etc.; a
+   two-stage fallback (① constraint relaxation with a penalty on unmet demand →
+   ② rule-based alternative) always returns a feasible solution.
 
-### 負荷テスト結果（参考値・環境依存）
+### Load-test results (reference values, environment-dependent)
 
-| 規模 | 時刻数 T | 変数 | 制約 | 求解時間 |
+| Scale | Steps T | Variables | Constraints | Solve time |
 |---:|---:|---:|---:|---:|
-| 1日 | 24 | 156 | 240 | ~0.01s |
-| 10日 | 240 | 1,557 | 2,400 | ~0.08s |
-| 100日 | 2,400 | 15,548 | 24,000 | ~0.9s |
+| 1 day | 24 | 156 | 240 | ~0.01s |
+| 10 days | 240 | 1,557 | 2,400 | ~0.08s |
+| 100 days | 2,400 | 15,548 | 24,000 | ~0.9s |
 
-データ規模を100倍（24h → 2,400h）に拡大しても求解時間はほぼ線形に増加し、
-1秒未満で最適解を取得します（`python src/benchmark.py` で再生成可能）。
+Scaling the data 100x (24h → 2,400h) increases solve time roughly linearly and
+still finds the optimal solution in under a second (regenerate with
+`python src/benchmark.py`).
 
-![求解時間 vs データ規模（最大100倍）](docs/benchmark.png)
+![Solve time vs data scale (up to 100x)](docs/benchmark.png)
 
 ---
 
-## 主なパラメータ（`optimize_battery`）
+## Main parameters (`optimize_battery`)
 
-| 引数 | 既定 | 意味 |
+| Argument | Default | Meaning |
 |---|---|---|
-| `capacity` | 100.0 | 蓄電池容量 (MWh) |
-| `max_rate` | 20.0 | 最大充放電レート (MW) |
-| `loss_coeff` | 0.0006 | 送電損失係数 a（`loss = a·flow²`）。0で損失無効 |
-| `no_simultaneous` | True | 充放電同時禁止（MIP）。Falseで純LP（高速） |
-| `time_limit` | 30.0 | ソルバー打ち切り秒数 |
-| `mip_gap` | 0.01 | 許容 MIP ギャップ（近似解の妥協幅） |
-| `grid_limit` | None | グリッド購入上限 (MWh/h)。過小だとフォールバック発動 |
+| `capacity` | 100.0 | Battery capacity (MWh) |
+| `max_rate` | 20.0 | Maximum charge/discharge rate (MW) |
+| `loss_coeff` | 0.0006 | Transmission loss coefficient a (`loss = a·flow²`); 0 disables losses |
+| `no_simultaneous` | True | Forbid simultaneous charge/discharge (MIP). False for pure LP (faster) |
+| `time_limit` | 30.0 | Solver cutoff seconds |
+| `mip_gap` | 0.01 | Acceptable MIP gap (approximation tolerance) |
+| `grid_limit` | None | Grid purchase cap (MWh/h); too small triggers the fallback |
 
 ---
 
-## 既知の限界（公開時の注意）
+## Known limitations
 
-- データは合成。実データ・実市場の挙動とは異なります。
-- 送電損失は単一ハブの集約モデル（潮流計算・ネットワーク制約・電圧/無効電力は非対象）。
-- 単一バス・単一蓄電池の簡易モデルで、N-1 等の信頼度制約は含みません。
+- Data is synthetic and differs from real data / real market behavior.
+- Transmission loss is a single-hub aggregate model (no power-flow computation,
+  network constraints, or voltage / reactive power).
+- A simplified single-bus, single-battery model without reliability constraints
+  such as N-1.
 
-これらは「LP/MIP による蓄電池ディスパッチの定式化と、スケール・頑健性の作り込み」を
-示すための教育的スコープです。
+These reflect an educational scope intended to demonstrate LP/MIP formulation of
+battery dispatch and the engineering of scale and robustness.
 
-## ライセンス
-MIT License（`LICENSE` 参照）。
+## License
+MIT License (see `LICENSE`).
