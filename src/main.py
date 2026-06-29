@@ -1,8 +1,8 @@
 """
-メインスクリプト: シミュレーションデータを読み込み、バッテリー充放電を最適化し、
-コスト削減効果のレポートをコンソールに出力する。
+Main script: load the simulation data, optimize battery charge/discharge, and
+print a cost-reduction report to the console.
 
-実行:
+Run:
     python src/main.py
 """
 
@@ -10,15 +10,15 @@ import os
 import sys
 import pandas as pd
 
-# src ディレクトリを import パスに追加（どこから実行しても動くように）
+# Add the src directory to the import path (so it runs from anywhere)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from optimizer import optimize_battery, baseline_cost  # noqa: E402
 
-# --- バッテリー諸元 ---
-CAPACITY = 100.0      # 最大容量 (MWh)
-MAX_RATE = 20.0       # 最大充放電レート (MW = MWh/h)
-INITIAL_SOC = 0.0     # 初期蓄電量 (MWh)
-LOSS_COEFF = 0.0006   # 送電損失係数 a（loss = a * 流量^2, I^2R 損の近似）
+# --- Battery specs ---
+CAPACITY = 100.0      # maximum capacity (MWh)
+MAX_RATE = 20.0       # maximum charge/discharge rate (MW = MWh/h)
+INITIAL_SOC = 0.0     # initial state of charge (MWh)
+LOSS_COEFF = 0.0006   # transmission loss coeff a (loss = a * flow^2, I^2R approx)
 
 
 def load_data():
@@ -52,7 +52,7 @@ def main():
     print(f"\nバッテリー諸元: 最大容量 {CAPACITY:.0f} MWh / "
           f"最大充放電レート {MAX_RATE:.0f} MW / 初期蓄電量 {INITIAL_SOC:.0f} MWh\n")
 
-    # --- 最適化 ---
+    # --- Optimization ---
     result = optimize_battery(
         solar, demand, price,
         capacity=CAPACITY, max_rate=MAX_RATE, initial_soc=INITIAL_SOC,
@@ -60,7 +60,7 @@ def main():
     )
     base = baseline_cost(solar, demand, price, loss_coeff=LOSS_COEFF)
 
-    # --- ステータス ---
+    # --- Status ---
     print("【最適化ステータス】")
     print(f"  ソルバー結果: {result['status']}")
     if result["status"] != "Optimal":
@@ -68,7 +68,7 @@ def main():
         return
     print("  ✓ 最適解 (Optimal) が得られました。\n")
 
-    # --- 時間別テーブル ---
+    # --- Hourly table ---
     print("【時間別 最適スケジュール】")
     header = (
         f"{'時':>3} | {'太陽光':>7} | {'需要':>7} | {'価格':>7} | "
@@ -86,7 +86,7 @@ def main():
             action = "放電 ▼"
         else:
             action = "待機 ―"
-        # SoC バー（簡易ゲージ）
+        # SoC bar (simple gauge)
         bar_len = int(round(soc / CAPACITY * 10))
         soc_bar = "█" * bar_len + "·" * (10 - bar_len)
         print(
@@ -95,7 +95,7 @@ def main():
             f"{action:>6} | {soc:>6.1f} {soc_bar}"
         )
 
-    # --- コスト比較 ---
+    # --- Cost comparison ---
     base_cost = base["total_cost"]
     opt_cost = result["total_cost"]
     saving = base_cost - opt_cost
@@ -117,7 +117,7 @@ def main():
     print(f"      総コスト          : {fmt_money(opt_cost)}")
     print(f"      送電ロス          : {total_loss_opt:,.1f} MWh")
     print(f"      捨てた太陽光       : {total_curtail_opt:,.1f} MWh")
-    loss_delta = total_loss_base - total_loss_opt  # 正=削減, 負=増加
+    loss_delta = total_loss_base - total_loss_opt  # positive = reduction, negative = increase
     print("-" * 70)
     print(f"  💰 コスト削減額      : {fmt_money(saving)}")
     print(f"  📉 コスト削減率      : {saving_pct:.1f} %")

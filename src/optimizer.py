@@ -1,45 +1,49 @@
 """
-バッテリー充放電の最適化モデル (PuLP) — 大規模・頑健性強化版
+Battery charge/discharge optimization model (PuLP) — scalable & robust edition.
 
-データ規模が100倍（数千〜時刻）になっても実務時間内に解を返すための工夫:
+Techniques that keep solve time practical even when the data grows ~100x
+(thousands of time steps):
 
-  [1] ソルバー制御 (calc speed)
-      - time_limit (秒) で打ち切り、mip_gap で「十分良い近似解」を許容。
-      - HiGHS を優先（arm64 ネイティブ）、無ければ CBC にフォールバック。
+  [1] Solver control (calc speed)
+      - Cut off with time_limit (seconds); accept a "good enough" approximate
+        solution via mip_gap.
+      - Prefer HiGHS (arm64-native); fall back to CBC if unavailable.
 
-  [2] スパース性 (疎なマトリクス)
-      - 値が常に0になる変数（夜間 solar=0 の curtail 等）は生成しない。
-      - 制約は lpSum / 辞書内包で必要最小限だけ構築。
+  [2] Sparsity (sparse matrix)
+      - Do not create variables that are always zero (e.g., curtail at night
+        when solar=0).
+      - Build constraints with lpSum / dict comprehensions, kept minimal.
 
-  [3] 例外処理 (解なし耐性)
-      - status を厳格にチェック。Infeasible 等でクラッシュさせない。
-      - 「制約緩和（未充足需要にペナルティ）」→「ルールベース代替」の
-        2段フォールバックで必ず実行可能な解を返す。
+  [3] Exception handling (infeasibility tolerance)
+      - Check status strictly. Never crash on Infeasible etc.
+      - A two-stage fallback ("constraint relaxation with a penalty on unmet
+        demand" -> "rule-based alternative") always returns a feasible solution.
 
-意思決定変数（各時刻 t）:
-    grid_buy[t]   : グリッド購入量 (MWh)      0 <= . <= grid_limit
-    charge[t]     : 充電量 (MWh)              0 <= . <= max_rate
-    discharge[t]  : 放電量 (MWh)              0 <= . <= max_rate
-    soc[t]        : 時刻 t 終了時の蓄電量      0 <= . <= capacity
-    curtail[t]    : 太陽光抑制量 (solar>0 の時刻のみ生成)
-    is_charge[t]  : 充電中フラグ (binary, no_simultaneous=True の時のみ)
-    unmet[t]      : 未充足需要 (allow_unmet=True の緩和時のみ, 高ペナルティ)
+Decision variables (for each time step t):
+    grid_buy[t]   : grid purchase (MWh)          0 <= . <= grid_limit
+    charge[t]     : charge amount (MWh)           0 <= . <= max_rate
+    discharge[t]  : discharge amount (MWh)        0 <= . <= max_rate
+    soc[t]        : state of charge at end of t   0 <= . <= capacity
+    curtail[t]    : solar curtailment (created only at steps where solar>0)
+    is_charge[t]  : charging flag (binary, only when no_simultaneous=True)
+    unmet[t]      : unmet demand (only when allow_unmet=True, heavily penalized)
 """
 
 import pulp
 import numpy as np
 
-# ステータス分類
+# Status labels
 _STATUS_OPTIMAL = "Optimal"
 _STATUS_INFEASIBLE = "Infeasible"
 
 
 def _get_solver(time_limit=None, mip_gap=None, threads=None, msg=False):
     """
-    利用可能なソルバーを time_limit / mip_gap 付きで構築する。
+    Build an available solver configured with time_limit / mip_gap.
 
-    - HiGHS / CBC とも PuLP 共通引数 timeLimit, gapRel を受け付ける。
-    - 古い CBC 用語の maxSeconds=timeLimit, fractionGap=gapRel に相当。
+    - Both HiGHS and CBC accept the PuLP-common args timeLimit, gapRel.
+    - These correspond to the legacy CBC terms maxSeconds=timeLimit,
+      fractionGap=gapRel.
     """
     kwargs = {"msg": msg}
     if time_limit is not None:
@@ -56,12 +60,12 @@ def _get_solver(time_limit=None, mip_gap=None, threads=None, msg=False):
                 return solver
         except Exception:
             continue
-    # 最後の手段
+    # Last resort
     return pulp.PULP_CBC_CMD(**kwargs)
 
 
 def _loss_breakpoints(flow_cap, n_segments):
-    """送電損失の区分線形近似に使う接線の接点（流量）を返す。"""
+    """Return the tangent points (flow values) used to PWL-approximate loss."""
     K = max(2, int(n_segments))
     return [flow_cap * (k / K) for k in range(1, K + 1)]
 
@@ -74,7 +78,7 @@ def _build_and_solve(
     time_limit, mip_gap, threads, msg,
 ):
     """
-    LP/MIP を構築して解く内部関数。スパース構築を徹底する。
+    Internal function that builds and solves the LP/MIP, kept strictly sparse.
     Returns: (status_str, result_dict_or_None)
     """
     T = len(solar)
@@ -82,29 +86,30 @@ def _build_and_solve(
 
     prob = pulp.LpProblem("Battery_Cost_Min", pulp.LpMinimize)
 
-    # --- 変数（必要なものだけ生成 = スパース）---
+    # --- Variables (create only what is needed = sparse) ---
     grid_buy = pulp.LpVariable.dicts("g", rng, lowBound=0, upBound=grid_limit)
     charge = pulp.LpVariable.dicts("c", rng, lowBound=0, upBound=max_rate)
     discharge = pulp.LpVariable.dicts("d", rng, lowBound=0, upBound=max_rate)
     soc = pulp.LpVariable.dicts("s", rng, lowBound=0, upBound=capacity)
 
-    # curtail は solar>0 の時刻だけ生成（夜間は捨てる余地が無いので変数不要）
+    # curtail only at steps with solar>0 (no curtailment to do at night)
     sun_hours = [t for t in rng if solar[t] > 0]
     curtail = pulp.LpVariable.dicts("cu", sun_hours, lowBound=0)
 
-    # 充放電同時禁止フラグ（MIP）。LP のままで良ければ生成しない。
+    # No-simultaneous-charge/discharge flag (MIP). Skip if pure LP is fine.
     is_charge = (
         pulp.LpVariable.dicts("b", rng, cat="Binary") if no_simultaneous else None
     )
 
-    # 制約緩和用の未充足需要スラック（フォールバック時のみ生成）
+    # Unmet-demand slack for constraint relaxation (created only on fallback)
     unmet = (
         pulp.LpVariable.dicts("u", rng, lowBound=0) if allow_unmet else None
     )
 
-    # 送電損失 loss[t] (MWh)。grid からの送電流量に対する I^2R 損を表現する。
-    # 物理的に損失は流量の2乗に比例（凸）するため、複数の接線で下から近似（区分線形）。
-    # loss_coeff=0 なら損失を無効化（純コスト最小化）。
+    # Transmission loss loss[t] (MWh): represents I^2R loss on grid-side flow.
+    # Physically loss is proportional to the square of flow (convex), so it is
+    # approximated from below with multiple tangents (piecewise linear).
+    # loss_coeff=0 disables losses (pure cost minimization).
     use_loss = loss_coeff is not None and loss_coeff > 0
     if use_loss:
         flow_cap = float(grid_limit) if grid_limit is not None \
@@ -114,17 +119,18 @@ def _build_and_solve(
     else:
         loss = None
 
-    # --- 目的関数（lpSum で一括構築）---
-    # grid_buy は「送電端での取得量」= 需要充足分 + 送電損失。損失分も買電コストになる。
+    # --- Objective (built in one shot with lpSum) ---
+    # grid_buy is the "amount taken at the grid side" = served demand +
+    # transmission loss; the loss portion is also a purchase cost.
     obj = pulp.lpSum(grid_buy[t] * price[t] for t in rng)
     if allow_unmet:
         obj += pulp.lpSum(unmet[t] * unmet_penalty for t in rng)
     prob += obj, "TotalCost"
 
-    # --- 制約（必要最小限のみ）---
+    # --- Constraints (only the minimum necessary) ---
     for t in rng:
         used_solar = solar[t] - (curtail[t] if t in curtail else 0)
-        # 負荷端に届く電力 = 太陽光 + (購入 - 送電損失) + 放電
+        # Power reaching the load = solar + (purchase - transmission loss) + discharge
         supply = used_solar + grid_buy[t] + discharge[t]
         if use_loss:
             supply = supply - loss[t]
@@ -132,11 +138,12 @@ def _build_and_solve(
             supply += unmet[t]
         prob += (supply == demand[t] + charge[t]), f"bal_{t}"
 
-        # curtail <= solar は upBound で表現（変数自体に上限を持たせる方が疎）
+        # curtail <= solar via upBound (a bound on the variable is sparser than a row)
         if t in curtail:
             curtail[t].upBound = solar[t]
 
-        # 送電損失の区分線形近似: loss >= 2a*x0*grid_buy - a*x0^2 （a*x^2 の接線群）
+        # PWL approximation of transmission loss: loss >= 2a*x0*grid_buy - a*x0^2
+        # (a family of tangents to a*x^2)
         if use_loss:
             a = loss_coeff
             for ki, x0 in enumerate(bpts):
@@ -144,13 +151,13 @@ def _build_and_solve(
                     loss[t] >= 2 * a * x0 * grid_buy[t] - a * x0 * x0
                 ), f"loss_{t}_{ki}"
 
-        # SoC 遷移
+        # SoC transition
         prev = initial_soc if t == 0 else soc[t - 1]
         prob += (
             soc[t] == prev + charge[t] * eff_charge - discharge[t] / eff_discharge
         ), f"soc_{t}"
 
-        # 充放電同時禁止（MIP）: charge<=M*b, discharge<=M*(1-b)
+        # No simultaneous charge/discharge (MIP): charge<=M*b, discharge<=M*(1-b)
         if no_simultaneous:
             prob += charge[t] <= max_rate * is_charge[t], f"cx_{t}"
             prob += discharge[t] <= max_rate * (1 - is_charge[t]), f"dx_{t}"
@@ -158,7 +165,7 @@ def _build_and_solve(
     prob.solve(_get_solver(time_limit, mip_gap, threads, msg))
     status = pulp.LpStatus[prob.status]
 
-    # 解（インカンベント）が存在するか厳格に確認
+    # Strictly verify that a solution (incumbent) exists
     obj_val = pulp.value(prob.objective)
     has_solution = obj_val is not None and pulp.value(soc[0]) is not None
 
@@ -193,13 +200,13 @@ def rule_based_dispatch(
     eff_charge=1.0, eff_discharge=1.0, grid_limit=None, loss_coeff=0.0,
 ):
     """
-    ソルバーを使わないルールベースの次善策（最終フォールバック）。
-    必ず実行可能な解を返す（足りない分は grid_limit の範囲で購入、
-    超過分は unmet として計上）。
+    Solver-free rule-based alternative (final fallback).
+    Always returns a feasible solution (buy the shortfall within grid_limit,
+    and record any excess as unmet).
 
-    戦略: 安い時間帯（下位40%価格）に余力があれば充電、
-          高い時間帯（上位40%）に放電してピークの購入を回避。
-    送電損失 loss = loss_coeff * (送電端流量)^2 を加味する。
+    Strategy: charge during cheap hours (bottom 40% price) when there is room,
+    discharge during expensive hours (top 40%) to avoid peak purchases.
+    Accounts for transmission loss = loss_coeff * (grid-side flow)^2.
     """
     T = len(solar)
     p = np.asarray(price, dtype=float)
@@ -219,26 +226,27 @@ def rule_based_dispatch(
         ch = dis = buy = curt = unmet = 0.0
 
         if surplus > 0:
-            # 太陽光が需要を上回る → 余剰で充電、残りは抑制
+            # Solar exceeds demand -> charge with the surplus, curtail the rest
             ch = min(surplus, max_rate, (capacity - soc) / eff_charge)
             curt = surplus - ch
         else:
-            need = -surplus  # 不足分（負荷端で必要な量）
+            need = -surplus  # shortfall (amount needed at the load side)
             if price[t] >= thr_high:
-                # 高価格 → 放電してグリッド購入を抑える
+                # High price -> discharge to reduce grid purchases
                 dis = min(need, max_rate, soc * eff_discharge)
                 delivered = need - dis
             elif price[t] <= thr_low:
-                # 安価格 → 余力があれば追加購入して充電（アービトラージ）
+                # Low price -> buy extra to charge if there is room (arbitrage)
                 ch = min(max_rate, (capacity - soc) / eff_charge)
                 delivered = need + ch
             else:
                 delivered = need
 
-            # 送電端流量 = 負荷端到達量 + 損失。loss = a*flow^2 を delivered で近似。
+            # Grid-side flow = amount delivered to load + loss.
+            # Approximate loss = a*flow^2 using `delivered`.
             buy = delivered + a * delivered * delivered
 
-            # グリッド購入上限を超える分は未充足
+            # Anything above the grid purchase cap is unmet
             if buy > cap_buy:
                 unmet = buy - cap_buy
                 buy = cap_buy
@@ -274,30 +282,32 @@ def optimize_battery(
     initial_soc: float = 0.0,
     eff_charge: float = 1.0,
     eff_discharge: float = 1.0,
-    grid_limit=None,            # グリッド購入の上限 (MWh/h)。None で無制限。
-    no_simultaneous: bool = True,  # 充放電同時禁止 (MIP化)。False で純LP（高速）。
-    loss_coeff: float = 0.0006,  # 送電損失係数 a（loss=a*flow^2）。0 で損失無効。
-    loss_segments: int = 6,     # 損失の区分線形近似に使う接線本数
-    time_limit: float = 30.0,   # ソルバー打ち切り秒数
-    mip_gap: float = 0.01,      # 許容 MIP ギャップ（1% 近似解で妥協）
+    grid_limit=None,            # Grid purchase cap (MWh/h). None = unlimited.
+    no_simultaneous: bool = True,  # Forbid simultaneous charge/discharge (MIP). False = pure LP (fast).
+    loss_coeff: float = 0.0006,  # Transmission loss coeff a (loss=a*flow^2). 0 disables losses.
+    loss_segments: int = 6,     # Number of tangents for the PWL loss approximation
+    time_limit: float = 30.0,   # Solver cutoff seconds
+    mip_gap: float = 0.01,      # Acceptable MIP gap (settle for a 1% approximation)
     threads=None,
     msg: bool = False,
 ):
     """
-    頑健な最適化エントリポイント。
+    Robust optimization entry point.
 
-    フロー:
-      1) 本来のモデルを time_limit / mip_gap 付きで解く。
-      2) 解あり（Optimal もしくは打ち切りでも実行可能なインカンベント）→ 返す。
-      3) Infeasible 等で解なし → 制約緩和（未充足需要にペナルティ）で再求解。
-      4) それでも駄目 → ルールベースの代替案を返す（クラッシュさせない）。
+    Flow:
+      1) Solve the intended model with time_limit / mip_gap.
+      2) If a solution exists (Optimal, or a feasible incumbent even when cut
+         off) -> return it.
+      3) If no solution due to Infeasible etc. -> re-solve with constraint
+         relaxation (penalty on unmet demand).
+      4) If that still fails -> return the rule-based alternative (never crash).
 
     Returns:
         dict: status, method, relaxed, total_cost, grid_buy[], charge[],
               discharge[], soc[], solar_curtail[], unmet[], n_vars, n_constraints,
               fallback_used (bool)
     """
-    # --- 1) 通常求解 ---
+    # --- 1) Normal solve ---
     try:
         status, result = _build_and_solve(
             solar, demand, price, capacity, max_rate, initial_soc,
@@ -313,7 +323,7 @@ def optimize_battery(
         result["fallback_used"] = False
         return result
 
-    # --- 2) フォールバックA: 制約緩和して再求解 ---
+    # --- 2) Fallback A: relax constraints and re-solve ---
     try:
         status2, result2 = _build_and_solve(
             solar, demand, price, capacity, max_rate, initial_soc,
@@ -330,7 +340,7 @@ def optimize_battery(
         result2["status"] = f"{_STATUS_INFEASIBLE}->Relaxed({status2})"
         return result2
 
-    # --- 3) フォールバックB: ルールベースの最終手段 ---
+    # --- 3) Fallback B: rule-based last resort ---
     rb = rule_based_dispatch(
         solar, demand, price, capacity, max_rate, initial_soc,
         eff_charge, eff_discharge, grid_limit, loss_coeff,
@@ -342,9 +352,10 @@ def optimize_battery(
 
 def baseline_cost(solar, demand, price, loss_coeff=0.0006):
     """
-    最適化前（ベースライン）: バッテリーを使わず、太陽光の余剰は捨て、
-    不足分はすべてその時刻の価格でグリッドから購入する。
-    公平な比較のため、送電損失 loss = loss_coeff*(流量)^2 も最適化側と同条件で加味する。
+    Pre-optimization baseline: no battery, curtail any solar surplus, and buy
+    the entire shortfall from the grid at each step's price.
+    For a fair comparison, transmission loss = loss_coeff*(flow)^2 is included
+    under the same conditions as the optimized side.
     """
     T = len(solar)
     a = loss_coeff if loss_coeff else 0.0
@@ -353,7 +364,7 @@ def baseline_cost(solar, demand, price, loss_coeff=0.0006):
     for t in range(T):
         net = demand[t] - solar[t]
         if net >= 0:
-            # 負荷端で net 必要 → 送電損失込みで net + a*net^2 を送電端から購入
+            # Load needs `net` -> buy net + a*net^2 at the grid side (loss included)
             delivered = net
             buy = delivered + a * delivered * delivered
             cut = 0.0

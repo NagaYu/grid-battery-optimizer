@@ -1,17 +1,17 @@
 """
-負荷テスト（ベンチマーク）
+Load test (benchmark)
 
-データ規模を段階的に拡大（1日 → 100日 = 100倍）し、最適化の実行時間・
-モデルサイズ・解の品質の推移を計測して、表とグラフで出力する。
+Scales the data size up in stages (1 day -> 100 days = 100x) and measures how
+solve time, model size, and solution quality evolve, printing a table and a chart.
 
-併せて、わざと矛盾した（解なしになりうる）シナリオを与え、
-フォールバックロジックがクラッシュせず代替解を返すことを検証する。
+It also feeds a deliberately contradictory (potentially infeasible) scenario to
+verify that the fallback logic returns an alternative solution without crashing.
 
-実行:
+Run:
     python src/benchmark.py
-出力:
-    - コンソールに結果テーブル
-    - results/benchmark.png （実行時間・モデルサイズの推移グラフ）
+Output:
+    - a results table on the console
+    - results/benchmark.png (chart of solve time / model size growth)
 """
 
 import os
@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")  # GUI 不要のバックエンド
+matplotlib.use("Agg")  # headless backend (no GUI required)
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -29,14 +29,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from optimizer import optimize_battery, baseline_cost  # noqa: E402
 from generate_data import generate_simulation_data       # noqa: E402
 
-# 各規模での共通ソルバー設定
-TIME_LIMIT = 60.0   # 1ケースあたり最大60秒で打ち切り
-MIP_GAP = 0.01      # 1% 近似解で妥協
+# Common solver settings across all scales
+TIME_LIMIT = 60.0   # cut off each case at 60 seconds max
+MIP_GAP = 0.01      # settle for a 1% approximate solution
 
 
 def run_scale_benchmark():
-    """データ規模を段階的に拡大して計測する。"""
-    day_scales = [1, 5, 10, 25, 50, 100]   # 1日(24h) 〜 100日(2400h) = 100倍
+    """Scale the data size up in stages and measure each case."""
+    day_scales = [1, 5, 10, 25, 50, 100]   # 1 day (24h) .. 100 days (2400h) = 100x
     rows = []
 
     print("=" * 92)
@@ -92,8 +92,8 @@ def run_scale_benchmark():
 
 def run_infeasibility_test():
     """
-    矛盾シナリオ（グリッド購入上限が需要に対して極端に小さい）を与え、
-    フォールバックが働くことを確認する。
+    Feed a contradictory scenario (grid purchase cap far too small for demand)
+    and confirm that the fallback kicks in.
     """
     print("\n" + "=" * 92)
     print(" 頑健性テスト: 解なし（Infeasible）シナリオでのフォールバック挙動")
@@ -104,7 +104,8 @@ def run_infeasibility_test():
     demand = df["power_demand"].to_numpy()
     price = df["grid_electricity_price"].to_numpy()
 
-    # グリッドからの購入を 10 MWh/h に厳しく制限 → 夜間のピーク需要を賄えず本来 Infeasible
+    # Tightly cap grid purchase at 10 MWh/h -> cannot cover peak demand at night,
+    # so the original problem is infeasible
     tight_limit = 10.0
     print(f" シナリオ: grid_limit={tight_limit} MWh/h（需要ピーク {demand.max():.0f} に対し過小）")
 
@@ -127,7 +128,7 @@ def run_infeasibility_test():
 
 
 def plot_results(rows, out_path):
-    """実行時間とモデルサイズの推移をグラフ化して保存する。"""
+    """Plot and save how solve time and model size grow."""
     T = [r["T"] for r in rows]
     times = [r["time"] for r in rows]
     nvars = [r["n_vars"] for r in rows]
@@ -142,7 +143,7 @@ def plot_results(rows, out_path):
     ax1.tick_params(axis="y", labelcolor=color1)
     ax1.grid(True, alpha=0.3)
 
-    # モデルサイズ（変数の数）を第2軸に
+    # Model size (number of variables) on the secondary axis
     ax2 = ax1.twinx()
     color2 = "#1f77b4"
     ax2.set_ylabel("Model size (number of variables)", color=color2)
@@ -150,7 +151,7 @@ def plot_results(rows, out_path):
              label="Variables")
     ax2.tick_params(axis="y", labelcolor=color2)
 
-    # データ点に求解秒を注記
+    # Annotate each data point with its solve time
     for x, y in zip(T, times):
         ax1.annotate(f"{y:.2f}s", (x, y), textcoords="offset points",
                      xytext=(0, 9), ha="center", fontsize=8, color=color1)
