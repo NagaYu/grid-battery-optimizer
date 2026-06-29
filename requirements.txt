@@ -1,8 +1,8 @@
 pulp>=2.7.0
 pandas>=2.0.0
 numpy>=1.24.0
-# Apple Silicon (arm64) でも動くネイティブLPソルバー。
-# PuLP同梱のCBCはx86_64版のためarm64では起動できないことがある。
+# Native LP solver that also runs on Apple Silicon (arm64).
+# The CBC bundled with PuLP is x86_64-only and may fail to launch on arm64.
 highspy>=1.5.0
-# 負荷テストの実行時間グラフ出力に使用
+# Used to output the load-test solve-time chart.
 matplotlib>=3.5.0
